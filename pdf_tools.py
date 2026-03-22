@@ -177,7 +177,7 @@ def auto_optimize_v10_2(source, out_path, target_mb, mode="pdf"):
 # --- 🖥️ 主選單 ---
 def main():
     while True:
-        print("\n" + "🔥" * 40 + "\n  PDF 巔峰效能工具箱 V10.1 (智能切換版)\n" + "🔥" * 40)
+        print("\n" + "🔥" * 40 + "\n  PDF 萬用工具箱 \n" + "🔥" * 40)
         print(" 1. 🗜️ 壓縮 PDF (智慧雙模)\n 2. 🖼️ 圖片轉 PDF (支援 HEIC)\n 3. 🔗 合併 PDF (資料夾)\n 4. 🔪 拆分 PDF\n 5. 🔐 PDF 加密\n 6. 🔖 文字浮水印\n 7. 📸 PDF 轉圖片\n 8. ✂️ 刪除指定頁面\n 0. 🚪 離開程式")
         
         choice = input("\n👉 請選擇功能: ").strip()
