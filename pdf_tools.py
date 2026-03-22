@@ -25,35 +25,25 @@ def get_out(p, suffix):
 def task_worker(args):
     path, mode, dpi, quality, idx = args
     try:
-        # ✨ 確保正確取得路徑：如果是列表則取索引，否則是單一字串
         target_path = path[idx] if isinstance(path, list) else path
-        
         if mode == "pdf":
             doc = fitz.open(target_path)
-            page = doc[idx]  # PDF 必須指定頁碼
+            page = doc[idx]
             pix = page.get_pixmap(dpi=dpi)
-            data = pix.tobytes("jpg", quality=quality)
+            # ✨ 關鍵修正：PyMuPDF 的參數名稱是 jpg_quality
+            data = pix.tobytes("jpg", jpg_quality=quality) 
             w, h = page.rect.width, page.rect.height
             doc.close()
         else:
-            # ✨ 圖片模式修正：直接讀取檔案數據
-            if target_path.lower().endswith('.heic'):
-                img = Image.open(target_path)
-                buf = io.BytesIO()
-                img.save(buf, format='JPEG', quality=quality)
-                data = buf.getvalue()
-                w, h = img.width * 72/dpi, img.height * 72/dpi
-            else:
-                # 針對 JPG/PNG，直接讀取像素並壓縮
-                img = fitz.open(target_path)
-                # 修正：圖片開啟後，第一頁即是圖片本身
-                pix = img[0].get_pixmap(dpi=dpi) 
-                data = pix.tobytes("jpg", quality=quality)
-                w, h = pix.width * 72/dpi, pix.height * 72/dpi
-                img.close()
+            # 圖片模式 (JPG/PNG) 同步修正
+            img = fitz.open(target_path)
+            pix = img.get_pixmap(dpi=dpi)
+            # ✨ 關鍵修正：同步修改為 jpg_quality
+            data = pix.tobytes("jpg", jpg_quality=quality)
+            w, h = pix.width * 72/dpi, pix.height * 72/dpi
+            img.close()
         return (idx, w, h, data)
     except Exception as e:
-        # print(f"DEBUG Error: {e}") # 偵錯用
         return None
 
 def process_core_parallel(source, out_path, dpi, quality, mode="pdf"):
@@ -177,7 +167,7 @@ def auto_optimize_v10_2(source, out_path, target_mb, mode="pdf"):
 # --- 🖥️ 主選單 ---
 def main():
     while True:
-        print("\n" + "🔥" * 40 + "\n  PDF 萬用工具箱 \n" + "🔥" * 40)
+        print("\n" + "🔥" * 40 + "\n  PDF 萬用工具箱\n" + "🔥" * 40)
         print(" 1. 🗜️ 壓縮 PDF (智慧雙模)\n 2. 🖼️ 圖片轉 PDF (支援 HEIC)\n 3. 🔗 合併 PDF (資料夾)\n 4. 🔪 拆分 PDF\n 5. 🔐 PDF 加密\n 6. 🔖 文字浮水印\n 7. 📸 PDF 轉圖片\n 8. ✂️ 刪除指定頁面\n 0. 🚪 離開程式")
         
         choice = input("\n👉 請選擇功能: ").strip()
