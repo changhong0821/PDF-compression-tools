@@ -19,7 +19,9 @@ PDF 轉圖片：高解析度 PNG 產出。
 
 🛠️ 安裝教學
 1. 複製專案
+   
 git clone https://github.com
+
 cd PDF-compression-tools
 
 2. 安裝依賴套件
