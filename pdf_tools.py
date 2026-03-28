@@ -26,68 +26,101 @@ def task_worker(args):
     path, mode, dpi, quality, idx = args
     try:
         target_path = path[idx] if isinstance(path, list) else path
+        
         if mode == "pdf":
+            # PDF 模式保持 PyMuPDF 處理
             doc = fitz.open(target_path)
             page = doc[idx]
             pix = page.get_pixmap(dpi=dpi)
-            # ✨ 關鍵修正：PyMuPDF 的參數名稱是 jpg_quality
-            data = pix.tobytes("jpg", jpg_quality=quality) 
+            data = pix.tobytes("jpg", jpg_quality=quality) # 前次修正的 jpg_quality
             w, h = page.rect.width, page.rect.height
             doc.close()
         else:
-            # 圖片模式 (JPG/PNG) 同步修正
-            img = fitz.open(target_path)
-            pix = img.get_pixmap(dpi=dpi)
-            # ✨ 關鍵修正：同步修改為 jpg_quality
-            data = pix.tobytes("jpg", jpg_quality=quality)
-            w, h = pix.width * 72/dpi, pix.height * 72/dpi
-            img.close()
+            # 🖼️ 圖片模式：改用 PIL (Pillow) 處理，完美銜接 HEIC
+            with Image.open(target_path) as img:
+                # 確保圖片是 RGB 模式 (去除 PNG 透明底或處理 HEIC 特殊色域)
+                if img.mode != "RGB":
+                    img = img.convert("RGB")
+                
+                # 透過記憶體緩衝區 (BytesIO) 將圖片以指定品質轉成 JPG 數據
+                img_byte_arr = io.BytesIO()
+                img.save(img_byte_arr, format="JPEG", quality=quality, dpi=(dpi, dpi))
+                data = img_byte_arr.getvalue()
+                
+                # PDF 的單位是 point (1 inch = 72 points)，換算頁面寬高
+                w, h = img.width * 72 / dpi, img.height * 72 / dpi
+                
         return (idx, w, h, data)
+        
     except Exception as e:
+        # 💡 建議開發階段可以把錯誤印出來，免得被默默吃掉
+        # print(f"\n⚠️ 任務 {idx} 發生錯誤: {e}")
         return None
 
-def process_core_parallel(source, out_path, dpi, quality, mode="pdf"):
-    # ✨ 修正：正確計算任務總數
+# ✨ 在參數最後加上 page_format="auto"
+def process_core_parallel(source, out_path, dpi, quality, mode="pdf", page_format="auto"):
+    # 📝 取得總頁數
     if mode == "pdf":
         with fitz.open(source) as temp:
             total = len(temp)
     else:
-        total = len(source) # 圖片模式 source 本身就是 list
+        total = len(source)
         
+    # 🚀 建立任務清單
     tasks = [(source, mode, dpi, quality, i) for i in range(total)]
     
+    # ⚡ 執行多核心並行處理
     with multiprocessing.Pool(processes=multiprocessing.cpu_count()) as pool:
-        results = [r for r in tqdm(pool.imap(task_worker, tasks), total=total, desc=f"  ⚡ 執行 [DPI:{dpi} Q:{quality}]", leave=False) if r]
+        results = [r for r in tqdm(pool.imap(task_worker, tasks), total=total, desc=f" ⚡ 處理中", leave=False) if r]
     
     results.sort(key=lambda x: x[0])
     new_doc = fitz.open()
-    for _, w, h, data in results:
-        new_page = new_doc.new_page(width=w, height=h)
-        new_page.insert_image(new_page.rect, stream=data)
+    
+    for _, orig_w, orig_h, data in results:
+        # 📐 決定畫布尺寸
+        if page_format == "a4_p":
+            page_w, page_h = 595.2, 841.9
+        elif page_format == "a4_l":
+            page_w, page_h = 841.9, 595.2
+        else:
+            page_w, page_h = orig_w, orig_h
+
+        new_page = new_doc.new_page(width=page_w, height=page_h)
+        new_page.insert_image(new_page.rect, stream=data, keep_proportion=True)
     
     if len(new_doc) > 0:
         new_doc.save(out_path, garbage=4, deflate=True)
     new_doc.close()
 
-
 # --- 🔄 備援模式：穩健的二元搜尋 ---
-def fallback_binary_search(source, out_path, target_mb, mode):
+# ✨ 步驟：在參數列最後加上 page_format="auto"
+def fallback_binary_search(source, out_path, target_mb, mode, page_format="auto"):
     print("\n⚠️ 採樣失敗！啟動 [穩健二元搜尋模式]...")
     target_bytes = target_mb * 1024 * 1024
     low_q, high_q = 20, 95
     best_file = None
+    
     for i in range(5):
         cur_q = (low_q + high_q) // 2
         tmp = out_path + f".tmp_{i}"
-        process_core_parallel(source, tmp, 150, cur_q, mode)
+        
+        # ✨ 步驟：在呼叫核心引擎時，務必把 page_format 傳進去
+        # 這樣二分搜尋產出的暫存檔才會維持正確的 A4 比例
+        process_core_parallel(source, tmp, 150, cur_q, mode, page_format)
+        
         if not os.path.exists(tmp): continue
         size = os.path.getsize(tmp)
         print(f"   📊 輪次 {i+1}: 品質 {cur_q:2} -> {size/1024/1024:.2f} MB")
+        
         if size <= target_bytes:
-            if best_file: os.remove(best_file)
+            if best_file: 
+                try: os.remove(best_file)
+                except: pass
             best_file = tmp; low_q = cur_q + 1
         else:
-            high_q = cur_q - 1; os.remove(tmp)
+            high_q = cur_q - 1; 
+            try: os.remove(tmp)
+            except: pass
     
     if best_file:
         if os.path.exists(out_path): os.remove(out_path)
@@ -96,10 +129,12 @@ def fallback_binary_search(source, out_path, target_mb, mode):
     return False
 
 # --- 🚀 智能雙模切換優化 ---
-def auto_optimize_v10_2(source, out_path, target_mb, mode="pdf"):
-    """🚀 V10.2: 針對圖片型/損壞 PDF 強化採樣邏輯"""
+# 參數加上 page_format="auto"
+def auto_optimize_v10_2(source, out_path, target_mb, mode="pdf", page_format="auto"):
     if target_mb <= 0:
-        process_core_parallel(source, out_path, 300, 90, mode); return True
+        # 記得把 page_format 傳下去
+        process_core_parallel(source, out_path, 300, 90, mode, page_format)
+        return True
 
     total = len(fitz.open(source)) if mode == "pdf" else len(source)
     sample_count = max(5, min(int(total * 0.2), 30))
@@ -121,7 +156,8 @@ def auto_optimize_v10_2(source, out_path, target_mb, mode="pdf"):
 
     # --- 【改動點 3】：若徹底失敗才執行回退 ---
     if not sample_res:
-        return fallback_binary_search(source, out_path, target_mb, mode)
+        # ✨ 步驟：傳入 page_format
+        return fallback_binary_search(source, out_path, target_mb, mode, page_format)
 
     # --- 【改動點 4】：調整預估係數與鎖定方案 (針對全圖片 PDF 加嚴至 82%) ---
     avg_bytes = sum(len(r[3]) for r in sample_res) / len(sample_res) # 修正: r[3] 為數據
@@ -137,7 +173,8 @@ def auto_optimize_v10_2(source, out_path, target_mb, mode="pdf"):
     else:               dpi, q = 300, 90
 
     print(f"✨ 鎖定方案：DPI {dpi} / 品質 {q}")
-    process_core_parallel(source, out_path, dpi, q, mode)
+    # 記得把 page_format 傳下去
+    process_core_parallel(source, out_path, dpi, q, mode, page_format)
     
     # 溢出二次修正邏輯保持不變...
         # --- 🛡️ 強力防線：確保最終產出 [絕對小於等於] 指令容量 ---
@@ -177,21 +214,40 @@ def main():
         try:
             if choice in ["1", "2"]:
                 t = float(input("💾 目標 MB (0為不限): "))
-                out = get_out(path, "optimized") if choice=="1" else os.path.join(os.path.dirname(path), f"{os.path.basename(path.rstrip('\\/'))}_combined.pdf")
-                
-                # 🛠️ 修正 4：智慧判斷拖入的是單一檔案還是資料夾
+            
+            # --- ✨ 關鍵修正點 1：先初始化 src 為 None ---
+                src = None
+                out = ""
+            
+            # 🆕 頁面比例選擇 (延續前面的需求)
+                print("\n 📄 頁面版型：1.自動  2.A4直  3.A4橫")
+                fmt_in = input(" 👉 選擇 (預設1): ").strip()
+                p_fmt = "a4_p" if fmt_in=="2" else ("a4_l" if fmt_in=="3" else "auto")
+
                 if choice == "1":
-                    src = path
+                    if os.path.isfile(path):
+                        src = path
+                        out = get_out(path, "optimized")
+                    else:
+                        print("❌ 錯誤：找不到 PDF 檔案！")
+            
                 else: # choice == "2"
                     if os.path.isdir(path):
                         src = sorted([os.path.join(path, f) for f in os.listdir(path) if f.lower().endswith(('.jpg','.jpeg','.png','.heic'))])
+                        out = os.path.join(path, f"{os.path.basename(path.rstrip('\\/'))}_combined.pdf")
                     elif os.path.isfile(path):
                         src = [path]
+                        out = get_out(path, "combined")
                     else:
-                        src = []
+                        print("❌ 錯誤：路徑無效！")
 
-                if not src: print("❌ 找不到有效檔案！"); continue
-                auto_optimize_v10_2(src, out, t, "pdf" if choice=="1" else "jpg")
+                # --- ✨ 關鍵修正點 2：確保 src 有值才執行 ---
+                if src:
+                    # 傳入所有必要的參數 (包括新修復的 p_fmt)
+                    auto_optimize_v10_2(src, out, t, "pdf" if choice=="1" else "jpg", p_fmt)
+                    print(f"✅ 任務成功完成！")
+                else:
+                    print("⚠️ 無法繼續執行，因為未偵測到有效來源。")
 
             elif choice == "3" and os.path.isdir(path):
                 pdfs = sorted([os.path.join(path, f) for f in os.listdir(path) if f.lower().endswith('.pdf')])
